@@ -1,0 +1,66 @@
+/*CODE WRITTEN BY SWUN WUNNA HTET (2026)
+CODE DESCRIPTION: This code is an example template for the participants to get familiar with
+                  Google Earth Engine (GEE) satellite imagery analysis.
+*/
+
+var l8 = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2"),
+    aoi = // Provide your Area of Interest here.
+
+
+// From here, we'll learn about how to call Landsat 8 imagery from Data Catalog
+// Check out "Search places and datasets"
+
+// For every variable, the term "var" need to be called.
+
+// Filtering the image collection with date and AOI
+var start= ee.Date('2025-01-01');
+var end =  ee.Date('2026-01-01');
+
+l8 = l8.filterDate(start, end).filterBounds(aoi);
+
+// Let's check out your image collection
+print('L8 Col', l8);
+
+// To save your time rendering, we will select only the first image of Landsat-8
+var image = l8.first();
+
+print('L8 image', image);
+
+// Let's say we only want spectral bands, not the others
+var image2 = image.select('SR_B[1-7]');
+
+
+// Mathematical operations
+// GEE also provides a variety of raster band mathematical operations
+
+image2 = (image2.multiply(0.0000275)).subtract(0.02);
+
+// Visualizing your image in GEE
+Map.addLayer(image2, {}, 'L8 (SR)');
+
+
+// At this point, we've learnt how to visualize and analyze a single 
+// ee.Image in the code editor. But what about the whole image collection
+
+// Let's apply radiometric conversion maths applied to all images in
+// the Landsat-8 image collection
+
+// Applying a function to apply same maths 
+function DNtoSR(image){
+  var img = image.select('SR_B[1-7]');
+  
+  img = (img.multiply(0.0000275)).subtract(0.02);
+  
+  img = img.multiply(100).toInt();
+  
+  return ee.Image(img.copyProperties(image, ['system:time_start']));
+}
+
+var SR = l8.map(DNtoSR);
+
+Map.addLayer(SR, {}, 'L8_collection');
+
+
+//////////////////////////////////////////////////////////////////////////
+/////////////////// END OF CODE
+//////////////////////////////////////////////////////////////////////////

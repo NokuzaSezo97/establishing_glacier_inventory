@@ -1,0 +1,210 @@
+var aoi = ,// Provide your area of interest
+    terra_snow = ee.ImageCollection("MODIS/061/MOD10A1"),
+    aqua_snow = ee.ImageCollection("MODIS/061/MYD10A1");
+
+/*CODE WRITTEN BY SWUN WUNNA HTET (2026)
+
+CODE DESCRIPTION: This code generates the time series of MODIS LST, snow and CHIRPS
+                  precipitation in Afghanistan from 2002 to 2025 to identify Afghanistan's
+                  ablation/accumulation characteristics. This would be helpful
+                  in filtering out Landsat imagery for detection of glaciers.
+                  
+                  Important:Before running the code, users require uploading the AOI vector data into
+                  your GEE assets first.
+                  
+                  Outputs: CSV table containing date LST (°C), snow_cover (%)
+*/
+
+///////////////////////////////////////////////////////////////////////
+// DEFINE YOUR SET ANALYSIS PERIOD
+///////////////////////////////////////////////////////////////////////
+
+var startyear = 2005, endyear = 2010;
+
+var start = ee.Date(startyear+'-01-01'), end = ee.Date((endyear+1)+'-01-01');
+
+///////////////////////////////////////////////////////////////////////
+// FILTER DATASETS
+///////////////////////////////////////////////////////////////////////
+
+
+terra_snow = terra_snow.filterDate(start, end).filterBounds(aoi);
+aqua_snow = aqua_snow.filterDate(start, end).filterBounds(aoi);
+
+///////////////////////////////////////////////////////////////////////
+// FUNCTION: PREPROCESS MODIS SNOW COVER PRODUCT
+///////////////////////////////////////////////////////////////////////
+function PREPROCESS(img, bandname) {
+
+  // Reproject and clip
+  var reproj = img.reproject({
+    crs: 'EPSG:4326',
+    scale: 500
+  }).clip(aoi);
+
+  // -------------------------
+  // Basic QA
+  // -------------------------
+  var qr = reproj.select('NDSI_Snow_Cover_Basic_QA');
+
+  // Extract the relevant QA bits (bits 0–1)
+  var qa = qr.bitwiseAnd(3);
+
+  // Keep Best (0), Good (1), and OK (2)
+  var qaMask = qa.lte(2);
+
+  // -------------------------
+  // Valid snow-cover values
+  // -------------------------
+  var snowMask = reproj.select('NDSI_Snow_Cover').lte(100);
+
+  // -------------------------
+  // Apply masks
+  // -------------------------
+  reproj = reproj.updateMask(qaMask).updateMask(snowMask);
+
+  // -------------------------
+  // Select snow-cover band
+  // -------------------------
+  reproj = reproj.select('NDSI_Snow_Cover').rename(bandname);
+
+  // -------------------------
+  // Date
+  // -------------------------
+  var date = ee.Date(img.get('system:time_start')).format('YYYY-MM-dd');
+
+  return ee.Image(reproj.copyProperties(img, ['system:time_start']).set('Date', date)
+  );
+}
+
+///////////////////////////////////////////////////////////////////////
+// PREPROCESSING OF QUALITY MASKED MODIS SNOW DATASET
+///////////////////////////////////////////////////////////////////////
+
+terra_snow = terra_snow.map(function(img) {
+  return PREPROCESS(img, 'Snow_Terra');
+});
+
+aqua_snow = aqua_snow.map(function(img) {
+  return PREPROCESS(img, 'Snow_Aqua');
+});
+
+///////////////////////////////////////////////////////////////////////
+// 8. MERGE TERRA AND AQUA SNOW DATASETS
+///////////////////////////////////////////////////////////////////////
+
+var snow_combined = terra_snow.merge(aqua_snow);
+
+
+///////////////////////////////////////////////////////////////////////
+// 9. COMBINE TERRA AND AQUA BASED ON ACQUISITION DATE
+///////////////////////////////////////////////////////////////////////
+
+// Get unique dates
+var snow_dates = ee.List(
+  snow_combined.aggregate_array('Date')
+).distinct().sort();
+
+
+// Create one image for each day
+var snow_daily = ee.ImageCollection.fromImages(
+
+  snow_dates.map(function(date) {
+
+    date = ee.String(date);
+
+    // Get all Terra + Aqua images acquired on this date
+    var daily = snow_combined
+      .filter(ee.Filter.eq('Date', date))
+      .median()
+      .rename('snow_cover');
+
+    return daily
+      .set('Date', date)
+      .set(
+        'system:time_start',
+        ee.Date(date).millis()
+      );
+  })
+);
+
+///////////////////////////////////////////////////////////////////////
+// EXTRACT DAILY ZONAL STATISTICS
+///////////////////////////////////////////////////////////////////////
+
+// Create a list of all dates in the analysis period
+var dateList = ee.List.sequence(0, end.difference(start, 'day').subtract(1)).map(function(day) {
+  return start.advance(ee.Number(day), 'day').format('YYYY-MM-dd');
+});
+
+
+///////////////////////////////////////////////////////////////////////
+// CREATING A TABLE OF EXTRACTED ZONAL VALUES OF SCA
+///////////////////////////////////////////////////////////////////////
+var table = ee.FeatureCollection(
+
+  dateList.map(function(date) {
+
+    date = ee.String(date);
+
+    ///////////////////////////////////////////////////////////////////
+    // SNOW COVER
+    ///////////////////////////////////////////////////////////////////
+
+    var snow_image = snow_daily
+      .filter(ee.Filter.eq('Date', date))
+      .first();
+
+    var snow_value = ee.Algorithms.If(
+      snow_image,
+      ee.Image(snow_image)
+        .reduceRegion({
+          reducer: ee.Reducer.mean(),
+          geometry: aoi,
+          scale: 500,
+          maxPixels: 1e13
+        })
+        .get('snow_cover'),
+      null
+    );
+
+
+    ///////////////////////////////////////////////////////////////////
+    // CREATE OUTPUT FEATURE
+    ///////////////////////////////////////////////////////////////////
+
+    return ee.Feature(null, {
+      date: date,
+      snow_cover: snow_value
+    });
+  })
+);
+
+///////////////////////////////////////////////////////////////////////
+// 13. PRINT FINAL TABLE
+///////////////////////////////////////////////////////////////////////
+print(
+  'Daily Zonal Statistics:',
+  table.limit(5)
+);
+
+
+///////////////////////////////////////////////////////////////////////
+// EXPORT CSV TO GOOGLE DRIVE
+///////////////////////////////////////////////////////////////////////
+
+Export.table.toDrive({
+
+  collection: table,
+
+  description:'SCA_TimeSeries_' + startyear + '_' + endyear, // Change here
+  folder:, // Change your google drive folder here
+  fileNamePrefix:'Afghanistan_LST_Snow_CHIRPS_TimeSeries_' +startyear + '_' + endyear,// Change here
+  fileFormat: 'CSV',
+  selectors: ['date','snow_cover']
+});
+
+  
+///////////////////////////////////////////////////////////////////////
+// CODE ENDS HERE
+///////////////////////////////////////////////////////////////////////

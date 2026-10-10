@@ -1,0 +1,297 @@
+var aoi = ,// Provide your area of interest here.
+    l8 = ee.ImageCollection("LANDSAT/LC08/C02/T1_L2"),
+    l7 = ee.ImageCollection("LANDSAT/LE07/C02/T1_L2"),
+    l5 = ee.ImageCollection("LANDSAT/LT05/C02/T1_L2"),
+    l1 = ee.ImageCollection("LANDSAT/LM01/C02/T1"),
+    l2 = ee.ImageCollection("LANDSAT/LM02/C02/T1"),
+    visparams = {"opacity":1,"bands":["SR_B5","SR_B4","SR_B3"],"min":60.15752017957357,"max":383.29183177713963,"gamma":1};
+
+
+/*CODE WRITTEN BY SWUN WUNNA HTET (2026)
+
+CODE DESCRIPTION: This code demonstrates the glacier mapping using machine learning in Afghanistan. The workflow uses 
+                  Landsat imagery and ground truths to classify glacier areas using random forest.
+                  
+                  Important:Before running the code, users require uploading the AOI vector data into
+                  your GEE assets first. Users can sample ground truths using Landsat imagery to identify
+                  glacier/non-glacier class types.
+                  
+                  Outputs: Classified glacier map and ground truths of the specified year.
+*/
+
+///////////////////////////////////////////////////////////////////////
+// DEFINE YOUR SET ANALYSIS PERIOD
+///////////////////////////////////////////////////////////////////////
+var YEAR = 2025;
+var start = ee.Date(YEAR+'-08-01');
+var end = ee.Date(YEAR+'-10-01');
+
+
+var satellite = 'L8'; // (Mandatory) L5 for 1993, L8 for 2025
+
+///////////////////////////////////////////////////////////////////////
+// FILTER DATASETS
+///////////////////////////////////////////////////////////////////////
+
+
+// For 1993, use Landsat 5, for 2025 use Landsat 8
+if (satellite == 'L5'){
+  var col = l5.filterBounds(aoi).filterDate(start, end);
+}else{
+  var col = l8.filterBounds(aoi).filterDate(start, end);
+}
+
+
+///////////////////////////////////////////////////////////////////////
+// FUNCTION FOR QUALITY MASKING FOR LANDSAT IMAGERY (BOTH L5 AND L8)
+///////////////////////////////////////////////////////////////////////
+
+function QAMASK(img){
+  // Preprocessing all the ee.Images available in country boundary
+  // 
+  var qa = img.select('QA_PIXEL');
+  
+  // selecting the mask bits
+  var dil_cloud = qa.rightShift(1).bitwiseAnd(1);
+  var cirrus = qa.rightShift(2).bitwiseAnd(1);
+  var cloud = qa.rightShift(3).bitwiseAnd(1);
+  var cloudshadow = qa.rightShift(4).bitwiseAnd(1);
+  
+  // keeping the valid mask
+  var mask = dil_cloud.eq(0).and(cirrus.eq(0)).and(cloud.eq(0)).and(cloudshadow.eq(0));
+  
+  var output = img.updateMask(mask).copyProperties(img, ['system:time_start', 'WRS_PATHROW']);
+  
+  return ee.Image(output);
+}
+
+///////////////////////////////////////////////////////////////////////
+// FUNCTION FOR RADIOMETRIC CONVERSION, NDSI AND TEMPORAL REDUCTION
+///////////////////////////////////////////////////////////////////////
+// function PREPROCESS(col, operation){
+  
+//   var revised = col.map(function(img){
+//     var img2 = img.select('SR_B.*');
+    
+//     img2 = (img2.multiply(0.0000275)).subtract(0.2);
+    
+//     // img2 = img2.focalMean(1, 'square','pixels', 3);
+
+//     var ndsi = img2.normalizedDifference(['SR_B2', 'SR_B5']).rename('NDSI');
+//     img2 = img2.addBands(ndsi);
+
+//     // Conversion for thermal Band
+//     var img3 = img.select('ST_B6');
+//     img3 = (img3.multiply(0.00341802)).add(149).toFloat().rename('ST_B6');
+//     img2 = img2.addBands(img3);
+    
+//     return ee.Image(img2.copyProperties(img, ['system:time_start', 'WRS_PATHROW']));
+//   });
+  
+//   var median;
+//   if (operation == 'min'){
+//     median = revised.min().clip(aoi);
+//   }else if (operation == 'max'){
+//     median = revised.max().clip(aoi);
+//   }else{
+//     median = revised.mean().clip(aoi);
+//   }
+  
+  
+//   return ee.Image(median.copyProperties(revised, ['system:time_start', 'WRS_PATHROW']));
+// }
+
+//// Note: This function is exclusively for Landsat-8 image collection.
+//// Uncomment this code section if you're using Landsat-8 for 2025
+
+function PREPROCESS(col, operation){
+  
+  var revised = col.map(function(img){
+    var img2 = img.select('SR_B.*');
+    
+    img2 = (img2.multiply(0.0000275)).subtract(0.2);
+    
+    // img2 = img2.focalMean(1, 'square','pixels', 3);
+
+    var ndsi = img2.normalizedDifference(['SR_B3', 'SR_B6']).rename('NDSI');
+    img2 = img2.addBands(ndsi);
+
+    // Conversion for thermal Band
+    var img3 = img.select('ST_B10');
+    img3 = (img3.multiply(0.00341802)).add(149).toFloat().rename('ST_B10');
+    img2 = img2.addBands(img3);
+    
+    return ee.Image(img2.copyProperties(img, ['system:time_start', 'WRS_PATHROW']));
+  });
+  
+  var median;
+  if (operation == 'min'){
+    median = revised.min().clip(aoi);
+  }else if (operation == 'max'){
+    median = revised.max().clip(aoi);
+  }else{
+    median = revised.mean().clip(aoi);
+  }
+  
+  
+  return ee.Image(median.copyProperties(revised, ['system:time_start', 'WRS_PATHROW']));
+}
+
+///////////////////////////////////////////////////////////////////////
+// NOW, WE'RE PREPROCESSING THE LANDSAT COLLECTION
+///////////////////////////////////////////////////////////////////////
+
+col = col.map(QAMASK);
+var img_comp = PREPROCESS(col);
+
+// Data type conversion into integer
+img_comp = img_comp.multiply(1000).toInt();
+
+// Let's check out the composite Landsat imagery
+// Map.addLayer(img_comp, visparams, satellite+' Composite Image');
+// Let's check out the composite Landsat imagery
+Map.addLayer(img_comp, {}, satellite+' Composite Image');
+
+///////////////////////////////////////////////////////////////////////
+// LANDSAT COMPOSITE GENERATION IS COMPLETED. NOW, YOU NEED TO COLLECT
+// GROUND SAMPLES ENOUGH TO IMPLEMENT GLACIER MAPPING.
+///////////////////////////////////////////////////////////////////////
+
+// FROM HERE, WE NEED TO COLLECT GLACIERS/NON-GLACIER PIONTS IN
+// GEE INTERACTIVE MAP. ONCE THE REPRESENTATIVE AMOUNT ARE OBTAINED,
+// WE WILL COMBINE ALL TOGETHER AS ONE DATASET (i.e., FEATURE COLLECTION)
+// LABEL INFORMATION: 1 = GLACIER, 0 = OTHERS (NON-GLACIER)
+
+var training = glacier.merge(other);
+
+// OR, IF YOU ALREADY HAVE THE LOCATION POINTS UPLOADED IN THE GEE ASSETS.
+// NOTE THAT YOU NEED AN ATTRIBUTE COLUMN 'LC' TO CLASSIFY COLUMNS
+
+
+// var training = ee.FeatureCollection('PROVIDE HERE');
+
+////////////////////////////////////////////////////////////////
+//    GLACIER CLASSIFICATION STARTS HERE
+////////////////////////////////////////////////////////////////
+
+// NEXT, WE'RE GOING TO EXTRACT THE VALUE FROM THE REFERENCE IMAGE
+var sampled = img_comp.sampleRegions({
+  collection: training,
+  properties: ['LC'],// Provide your column name.
+  scale: 30,
+  geometries: true
+});
+
+
+// EXPORT THE EXTRACTED MULTISPECTRAL VALUES AS SHAPEFILE TO ASSESS 
+// EXPLORATORY DATA ANALYSIS; Comment out the rest of the code for EDA
+// to execute separately.
+
+Export.table.toDrive({
+  collection: sampled,
+  description: YEAR+'_training_samples', 
+  folder: , // Provide your google drive folder
+  fileFormat: 'SHP',
+  selectors: ['LC', 'NDSI', 'SR_B1', 'SR_B2', 'SR_B3', 
+            'SR_B4', 'SR_B5', 'ST_B6', 
+            'SR_B7']
+});
+
+// We'll split the whole dataset into three parts:
+// 1. Training set (60%)
+// 2. Cross-validation set (20%)
+// 3. Testing set (20%)
+
+sampled = sampled.randomColumn('random');
+// print("Dataset Columns: ", sampled.limit(10));
+
+var train_set = sampled.filter(ee.Filter.lt('random', 0.6));
+
+var cv_set = sampled.filter(
+  ee.Filter.and(
+    ee.Filter.gte('random', 0.6),
+    ee.Filter.lt('random', 0.8)
+  )
+);
+var test_set = sampled.filter(ee.Filter.gte('random', 0.8));
+
+////////////////////////////////////////////////////////////////
+//    CREATING A RANDOM FOREST CLASSIFIER AND TRAIN THE MODEL
+////////////////////////////////////////////////////////////////
+
+
+// NOTE THAT THE MODEL IS TRAINED USING TRAINING SET, NOT WITH THE WHOLE DATASET.
+var RF_classifier = ee.Classifier.smileRandomForest({
+  numberOfTrees: 100,
+  variablesPerSplit: 2,
+  minLeafPopulation: 1
+}).train({
+  features: train_set, // PAY ATTENTION TO THIS
+  classProperty: 'LC',
+  inputProperties: img_comp.bandNames()
+});
+
+
+////////////////////////////////////////////////////////////////
+// OBSERVE THE ALL DATASETS ACCURACY ASSESSMENT PARAMETERICS
+////////////////////////////////////////////////////////////////
+
+var pred_train = train_set.classify(RF_classifier);
+var train_matrix = pred_train.errorMatrix('LC', 'classification');
+print('Training Accuracy Assessment', train_matrix.accuracy());
+print('Training Confusion Matrix', train_matrix);
+print('Training F1 Score', train_matrix.fscore());
+print('Training Kappa Score', train_matrix.kappa());
+
+
+var pred_cv = cv_set.classify(RF_classifier);
+var cv_matrix = pred_cv.errorMatrix('LC', 'classification');
+print('Cross Validation Accuracy Assessment', cv_matrix.accuracy());
+print('Cross Validation Confusion Matrix', cv_matrix);
+print('Cross Validation F1 Score', cv_matrix.fscore());
+print('Cross Validation Kappa Score', cv_matrix.kappa());
+
+var pred_test = test_set.classify(RF_classifier);
+var test_matrix = pred_test.errorMatrix('LC', 'classification');
+print('Test Accuracy Assessment', test_matrix.accuracy());
+print('Test Confusion Matrix', test_matrix);
+print('Test F1 Score', test_matrix.fscore());
+print('Test Kappa Score', test_matrix.kappa());
+
+////////////////////////////////////////////////////////////////
+// WHEN THE ACCURACY ASSESSMENT IS DONE, WE WILL RUN CLASSIFICATION
+////////////////////////////////////////////////////////////////
+
+var classified_map = img_comp.classify(RF_classifier).toByte();
+
+// Visualizing
+Map.addLayer(classified_map, {}, 'Glaciers');
+
+
+////////////////////////////////////////////////////////////////
+// FINALLY, WE'RE EXPORTING CLASSIFIED MAP IN GOOGLE DRIVE
+////////////////////////////////////////////////////////////////
+Export.image.toDrive({
+  image: classified_map, 
+  description: 'AFG_glacier_map_'+YEAR,
+  folder: ,// CHANGE YOUR GOOGLE DRIVE FOLDER HERE
+  region: aoi,
+  scale: 30,
+  crs: 'EPSG:4326',
+  maxPixels:1e12
+});
+
+Export.image.toDrive({
+  image: img_comp, 
+  description: 'AFG_'+YEAR+'_Imagery',
+  folder: , // CHANGE YOUR GOOGLE DRIVE FOLDER HERE
+  region: aoi,
+  scale: 30,
+  crs: 'EPSG:4326',
+  maxPixels:1e12
+});
+
+////////////////////////////////////////////////////////////////
+//    GLACIER CLASSIFICATION ENDS HERE
+////////////////////////////////////////////////////////////////
+

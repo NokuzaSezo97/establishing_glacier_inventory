@@ -1,0 +1,199 @@
+var aoi = 
+    /* color: #98ff00 */
+    /* shown: false */
+    /* displayProperties: [
+      {
+        "type": "rectangle"
+      }
+    ] */
+    ee.Geometry.Polygon(
+        [[[72.81025502642798, 37.360411925564556],
+          [72.81025502642798, 36.933506184567776],
+          [73.60676381549048, 36.933506184567776],
+          [73.60676381549048, 37.360411925564556]]], null, false),
+    glims = ee.FeatureCollection("GLIMS/20230607"),
+    elevation = ee.Image("CGIAR/SRTM90_V4");
+
+/*CODE WRITTEN BY SWUN WUNNA HTET (2026)
+CODE DESCRIPTION: This code is an example template for the participants to get familiar with
+                  Google Earth Engine (GEE)'s existing glacier inventory and vector operation.
+*/
+
+
+// 1. Firstly, we need to define our own AOI using GEE geometry import functionality
+// Note that, this will be helpful in creating ground truths.
+
+// Uploading GLIMS worldwide
+Map.addLayer(glims, {'color': 'blue'}, 'GLIMS');
+print(glims.limit(10));
+
+
+// Let's focus GLIMS boundary within selected AOI
+
+glims = glims.filterBounds(aoi);
+
+Map.addLayer(glims, {'color': 'blue'}, 'Updated GLIMS');
+
+// Let's visualize the histogram distribution of GLIMS glacier area
+// in selected AOI. For that, we're using ui features.
+
+var chart = ui.Chart.feature.histogram({
+  features: glims,
+  property: 'db_area'
+})
+.setOptions({
+  title: 'Glacier Area Distribution',
+  hAxis: {
+    title: 'Glacier Area (km²)'
+  },
+  vAxis: {
+    title: 'Number of Glaciers'
+  }
+});
+
+print('Histogram', chart);
+
+
+// You can also try scatterplot to investigate the relationship between two properties
+
+var chart2 = ui.Chart.feature.byFeature({
+  features: glims,
+  xProperty: 'db_area', // Note: db_area = glacier area - internal rock area.
+  yProperties: ['mean_elev']
+})
+.setChartType('ScatterChart')
+.setOptions({
+  title: 'Glacier Area vs. Mean Elevation',
+  hAxis: {
+    title: 'Glacier Area (km²)'
+  },
+  vAxis: {
+    title: 'Mean Elevation (m)'
+  },
+  pointSize: 4,
+  dataOpacity: 0.7,
+  legend: {
+    position: 'none'
+  },
+  trendlines: {
+    0: {
+      color: 'red',
+      lineWidth: 2,
+      showR2: true,
+      visibleInLegend: true
+    }
+  }
+});
+
+print('First Scatterplot', chart2);
+
+
+
+// As you can see from the plot, there are two groups of clusters
+// one at elevation zone around 5,000 m and low-lying area (0 m).
+
+// Let's see more details about the relationship at highly elevated
+// level.
+
+// We will use metadata filtering methods to remove glacier polygons
+// with zero elevation.
+
+glims = glims.filterMetadata('mean_elev', 'greater_than', 0);
+
+
+var chart3 = ui.Chart.feature.byFeature({
+  features: glims,
+  xProperty: 'db_area', // Note: db_area = glacier area - internal rock area.
+  yProperties: ['mean_elev']
+})
+.setChartType('ScatterChart')
+.setOptions({
+  title: 'Glacier Area vs. Mean Elevation',
+  hAxis: {
+    title: 'Glacier Area (km²)'
+  },
+  vAxis: {
+    title: 'Mean Elevation (m)'
+  },
+  pointSize: 4,
+  dataOpacity: 0.7,
+  legend: {
+    position: 'none'
+  },
+  trendlines: {
+    0: {
+      color: 'red',
+      lineWidth: 2,
+      showR2: true,
+      visibleInLegend: true
+    }
+  }
+});
+
+print('Revised Scatterplot', chart3);
+
+// Now, let's learn one technique which is commonly used, value extraction using
+// vector features.
+
+// In, GLIMS, we don't have information about the slope and aspect information to learn.
+// So we're using SRTM elevation data to derive degree slope and aspect layers,
+// and extract the zonal values.
+
+// First, let's call the SRTM data from the data catalog
+
+// Then, the next step is to apply API functions of calculation of degree slope
+
+var slp = ee.Terrain.slope(elevation).clip(aoi).rename('SLOPE'); // Notice that I apply image clipping API function
+
+print('Slope', slp);
+
+// We can visualize slope layer in Map.
+
+Map.addLayer(slp, {}, 'Slope');
+
+// Applying zonal extraction
+
+// Note that I'm still using the filtered GLIMS product with focused polygons at
+// highly elevated zone.
+
+glims = slp.select('SLOPE').reduceRegions({
+  collection: glims,
+  reducer: ee.Reducer.mean(),
+  scale: 30
+}).map(function(feature){
+  return feature.set('SLOPE', feature.get('mean'));
+});
+
+
+print('Extracted GLIMS2', glims.limit(10));
+
+// This time, we will visualize slope distribution
+
+var chart4 = ui.Chart.feature.histogram({
+  features: glims,
+  property: 'SLOPE'
+})
+.setOptions({
+  title: 'Slope Distribution',
+  hAxis: {
+    title: 'Slope (Degrees)'
+  },
+  vAxis: {
+    title: 'Number of Glaciers'
+  }
+});
+
+print('Slope Histogram', chart4);
+
+
+// Now, we will export GLIMS data with our extracted attributes to Google Drive
+Export.table.toDrive({
+  collection: glims,
+  description: 'Extracted_GLIMS',
+  folder: , // Provide your Google Drive folder name
+  fileFormat: 'SHP',
+  selectors: ['db_area', 'mean_elev', 'SLOPE', 'ASPECT'] // Select which columns you want to save
+});
+
+
+
